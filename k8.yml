@@ -1,0 +1,597 @@
+# Copyright 2020 Ping Identity Corporation. All Rights Reserved.
+#
+# Ping Identity reserves all rights in the program as delivered. Unauthorized
+# use, copying, modification, reverse engineering, disassembling, attempt to discover any
+# source code or
+# underlying ideas or algorithms, creating other works from it, and
+# distribution of this
+# program is strictly prohibited. The program or any portion thereof may not be
+# used or
+# reproduced in any form whatsoever except as provided by a license without the
+# written
+# consent of Ping Identity.  A license under Ping Identity's rights in the
+# program may be
+# available directly from Ping Identity.
+
+---
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: startup-script
+  labels:
+    app: startup-script
+spec:
+  selector:
+    matchLabels:
+      name: startup-script
+  template:
+    metadata:
+      labels:
+        name: startup-script
+    spec:
+      hostPID: true
+      containers:
+        - name: startup-script
+          image: gcr.io/google-containers/startup-script:v1
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          env:
+            - name: STARTUP_SCRIPT
+              value: |
+                #! /bin/bash
+                sysctl -w vm.max_map_count=262144
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  labels:
+    app: mongo
+spec:
+  serviceName: mongo-internal-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 0
+      containers:
+        - name: mongo
+          image: pricecs/mongo:4.2.0-poc
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 27017
+              name: management
+          command:
+            - "/bin/bash"
+            - "-c"
+            - "/opt/pingidentity/mongo/entrypoint.sh"
+          env:
+            - name: TZ
+              value: "Etc/UTC"
+            - name: ABS_ACCESS_KEY
+              value: "abs_ak"
+            - name: ABS_SECRET_KEY
+              value: "abs_sk"
+            - name: ABS_ACCESS_KEY_RU
+              value: "abs_ak_ru"
+            - name: ABS_SECRET_KEY_RU
+              value: "abs_sk_ru"
+            - name: MONGO_USERNAME
+              value: "absuser"
+            - name: MONGO_PASSWORD
+              value: "abs123"
+            - name: ATTACK_INITIAL_TRAINING
+              value: "24"
+            - name: ATTACK_UPDATE_INTERVAL
+              value: "24"
+            - name: API_DISCOVERY_INITIAL_PERIOD
+              value: "1"
+            - name: API_DISCOVERY_UPDATE_INTERVAL
+              value: "1"
+            - name: API_DISCOVERY
+              value: "true"
+            - name: API_DISCOVERY_SUBPATH
+              value: "1"
+            - name: WIRED_TIGER_CACHE_SIZE_GB
+              value: "3"
+            - name: MONGO_SSL
+              value: "false"
+            - name: POC_MODE
+              value: "true"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 6Gi
+            requests:
+              cpu: "1.5"
+              memory: 4Gi
+          readinessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /opt/pingidentity/mongo/data
+            - name: mongo-logs
+              mountPath: /opt/pingidentity/mongo/logs
+  volumeClaimTemplates:
+    - metadata:
+        name: mongo-logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: mongo-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Gi
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: abs
+  labels:
+    app: abs
+spec:
+  serviceName: abs-internal-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: abs
+  template:
+    metadata:
+      labels:
+        app: abs
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 10001
+        fsGroup: 0
+      containers:
+        - name: abs
+          image: pricecs/abs:4.1.1-poc
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: management
+            - containerPort: 9090
+              name: logs
+          command:
+            - "/bin/bash"
+            - "-c"
+            - "/opt/pingidentity/abs/entrypoint.sh"
+          env:
+            - name: TZ
+              value: "Etc/UTC"
+            - name: MONGO_RS
+              value: "mongo-0.mongo-internal-service"
+            - name: MONGO_USERNAME
+              value: "absuser"
+            - name: MONGO_PASSWORD
+              value: "abs123"
+            - name: MONGO_SSL
+              value: "false"
+          resources:
+            limits:
+              cpu: "4"
+              memory: 20Gi
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: abs-data
+              mountPath: /opt/pingidentity/abs/data
+            - name: abs-logs
+              mountPath: /opt/pingidentity/abs/logs
+            - name: abs-license
+              mountPath: /opt/pingidentity/abs/config/PingIntelligence.lic
+              subPath: PingIntelligence.lic
+      volumes:
+        - name: abs-license
+          configMap:
+            name: abs-license
+  volumeClaimTemplates:
+    - metadata:
+        name: abs-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Gi
+    - metadata:
+        name: abs-logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ase
+  labels:
+    app: ase
+spec:
+  serviceName: ase-internal-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ase
+  template:
+    metadata:
+      labels:
+        app: ase
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 10001
+        fsGroup: 0
+      containers:
+        - name: ase
+          image: pricecs/ase:4.1.1-poc
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: management
+            - containerPort: 9090
+              name: logs
+          command:
+            - "/bin/bash"
+            - "-c"
+            - "/opt/pingidentity/ase/entrypoint.sh"
+          env:
+            - name: TZ
+              value: "Etc/UTC"
+            - name: MODE
+              value: "inline"
+            - name: ENABLE_CLUSTER
+              value: "true"
+            - name: ENABLE_ABS
+              value: "true"
+            - name: ABS_ENDPOINT
+              value: "abs-0.abs-internal-service:8080"
+            - name: ABS_ACCESS_KEY
+              value: "abs_ak"
+            - name: ABS_SECRET_KEY
+              value: "abs_sk"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 8Gi
+            requests:
+              cpu: "1"
+              memory: 4Gi
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: ase-data
+              mountPath: /opt/pingidentity/ase/data
+            - name: ase-logs
+              mountPath: /opt/pingidentity/ase/logs
+            - name: ase-config
+              mountPath: /opt/pingidentity/ase/config/api
+            - name: shm
+              mountPath: /dev/shm
+            - name: ase-license
+              mountPath: /opt/pingidentity/ase/config/PingIntelligence.lic
+              subPath: PingIntelligence.lic
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+        - name: ase-license
+          configMap:
+            name: ase-license
+  volumeClaimTemplates:
+    - metadata:
+        name: ase-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: ase-logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Gi
+    - metadata:
+        name: ase-config
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dashboard
+  labels:
+    app: dashboard
+spec:
+  serviceName: dashboard
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 10001
+        fsGroup: 0
+      containers:
+        - name: dashboard
+          image: pricecs/dashboard:4.1.1-poc
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8030
+              name: dashboard
+          command:
+            - "/bin/bash"
+            - "-c"
+            - "/opt/pingidentity/dashboard/entrypoint.sh"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 8Gi
+            requests:
+              cpu: "1"
+              memory: 4Gi
+          env:
+            - name: TZ
+              value: "Etc/UTC"
+            - name: ABS_HOST
+              value: "abs-0.abs-internal-service"
+            - name: ABS_RESTRICTED_USER_ACCESS
+              value: "false"
+            - name: ABS_ACCESS_KEY
+              value: "abs_ak"
+            - name: ABS_SECRET_KEY
+              value: "abs_sk"
+            - name: ENABLE_XPACK
+              value: "true"
+            - name: ENABLE_SYSLOG
+              value: "false"
+            - name: SYSLOG_HOST
+              value: "127.0.0.1"
+            - name: SYSLOG_PORT
+              value: "514"
+            - name: ENABLE_ATTACK_LOG_TO_STDOUT
+              value: "true"
+            - name: ABS_URL
+              value: "https://abs-0.abs-internal-service:8080"
+            - name: ASE_URL
+              value: "https://ase-0.ase-internal-service:8010"
+            - name: ASE_ACCESS_KEY
+              value: "admin"
+            - name: ASE_SECRET_KEY
+              value: "admin"
+          readinessProbe:
+            tcpSocket:
+              port: 8030
+            initialDelaySeconds: 600
+            periodSeconds: 30
+          livenessProbe:
+            tcpSocket:
+              port: 8030
+            initialDelaySeconds: 600
+            periodSeconds: 30
+            failureThreshold: 10
+          volumeMounts:
+            - name: elasticsearch-data
+              mountPath: /opt/pingidentity/elasticsearch/data
+            - name: webgui-data
+              mountPath: /opt/pingidentity/webgui/data
+  volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+    - metadata:
+        name: webgui-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: abs-external-service
+  labels:
+    app: abs
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+      nodePort: 31080
+    - name: http-log
+      port: 9090
+      protocol: TCP
+      targetPort: 9090
+      nodePort: 31090
+  selector:
+    app: abs
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ase-external-service
+  labels:
+    app: ase
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+      nodePort: 31000
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 8443
+      nodePort: 31443
+  selector:
+    app: ase
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-external-service
+  labels:
+    app: dashboard
+spec:
+  type: NodePort
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 8030
+      nodePort: 31030
+  selector:
+    app: dashboard
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-internal-service
+  labels:
+    app: mongo
+spec:
+  clusterIP: None
+  ports:
+    - name: management
+      port: 27017
+  selector:
+    app: mongo
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: abs-internal-service
+  labels:
+    app: abs
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: 8080
+  selector:
+    app: abs
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ase-internal-service
+  labels:
+    app: ase
+spec:
+  clusterIP: None
+  ports:
+    - name: cluster
+      port: 8020
+    - name: management
+      port: 8010
+  selector:
+    app: ase
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: abs-license
+data:
+  PingIntelligence.lic: |
+    ID=
+    Organization=
+    Product=PingIntelligence
+    Module=ABS
+    Version=4.1
+    IssueDate=
+    EnforcementType=
+    ExpirationDate=
+    MaxTransactionsPerMonth=
+    Tier=
+    SignCode=
+    Signature=
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ase-license
+data:
+  PingIntelligence.lic: |
+    ID=
+    Product=PingIntelligence
+    Module=ASE
+    Version=4.1
+    IssueDate=
+    EnforcementType=
+    ExpirationDate=
+    MaxTransactionsPerMonth=
+    Tier=
+    SignCode=
+    Signature=
