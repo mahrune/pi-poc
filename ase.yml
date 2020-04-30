@@ -1,0 +1,145 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ase
+  labels:
+    app: ase
+spec:
+  serviceName: ase-internal-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ase
+  template:
+    metadata:
+      labels:
+        app: ase
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 10001
+        fsGroup: 0
+      containers:
+        - name: ase
+          image: pingidentity/ase:4.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: management
+            - containerPort: 9090
+              name: logs
+          command:
+            - "/bin/bash"
+            - "-c"
+            - "/opt/pingidentity/ase/entrypoint.sh"
+          env:
+            - name: TZ
+              value: "Etc/UTC"
+            - name: MODE
+              value: "inline"
+            - name: ENABLE_CLUSTER
+              value: "true"
+            - name: PEER_NODE
+              value: "ase-0.ase-internal-service:8020"
+            - name: ENABLE_ABS
+              value: "true"
+            - name: ABS_ENDPOINT
+              value: "abs-0.abs-internal-service:8080"
+            - name: ABS_ACCESS_KEY
+              value: "abs_ak"
+            - name: ABS_SECRET_KEY
+              value: "abs_sk"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 8Gi
+            requests:
+              cpu: "1"
+              memory: 4Gi
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: ase-data
+              mountPath: /opt/pingidentity/ase/data
+            - name: ase-logs
+              mountPath: /opt/pingidentity/ase/logs
+            - name: ase-config
+              mountPath: /opt/pingidentity/ase/config/api
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: ase-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: "gp2"
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: ase-logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: "gp2"
+        resources:
+          requests:
+            storage: 100Gi
+    - metadata:
+        name: ase-config
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: "gp2"
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ase-external-service
+  labels:
+    app: ase
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 8443
+  selector:
+    app: ase
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ase-internal-service
+  labels:
+    app: ase
+spec:
+  clusterIP: None
+  ports:
+    - name: cluster
+      port: 8020
+    - name: management
+      port: 8010
+  selector:
+    app: ase
